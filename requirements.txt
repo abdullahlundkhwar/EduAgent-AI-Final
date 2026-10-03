@@ -2,3 +2,6 @@ streamlit
 google-genai
 pypdf
 numpy
+python-docx
+python-pptx
+openpyxl
