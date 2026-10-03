@@ -1,39 +1,83 @@
 
 import streamlit as st
 from google import genai
+from google.genai import types
 from pypdf import PdfReader
+from docx import Document
+from pptx import Presentation
+from openpyxl import load_workbook
 import time
+import re
 
 
-# ==============================
-# Gemini API
-# ==============================
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
+
+st.set_page_config(
+    page_title="EduAgent AI",
+    page_icon="🎓",
+    layout="wide"
+)
+
+
+# =========================================================
+# GEMINI API
+# =========================================================
 
 api_key = st.secrets["GEMINI_API_KEY"]
 client = genai.Client(api_key=api_key)
 
 
-# ==============================
-# Retry Function
-# ==============================
+# =========================================================
+# SESSION STATE
+# =========================================================
 
-def generate_with_retry(prompt, max_retries=3):
+defaults = {
+    "document_text": "",
+    "document_name": "",
+    "document_chunks": [],
+    "image_files": [],
+    "processed_files": [],
+    "chat_history": [],
+    "question_count": 0,
+    "knowledge_loaded": False
+}
+
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# =========================================================
+# GEMINI RETRY FUNCTION
+# =========================================================
+
+def generate_with_retry(contents, max_retries=3):
 
     for attempt in range(max_retries):
 
         try:
+
             response = client.models.generate_content(
                 model="gemini-3.5-flash-lite",
-                contents=prompt
+                contents=contents
             )
 
             return response.text
 
         except Exception as e:
 
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
+            error_text = str(e)
 
-                time.sleep(5)
+            if "503" in error_text or "UNAVAILABLE" in error_text:
+
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                else:
+                    raise Exception(
+                        "Gemini is still unavailable after several attempts."
+                    )
 
             else:
                 raise e
@@ -42,16 +86,30 @@ def generate_with_retry(prompt, max_retries=3):
         "Gemini is still unavailable after several attempts."
     )
 
+# =========================================================
+# TEXT CLEANING
+# =========================================================
 
-# ==============================
-# PDF Text Extraction
-# ==============================
+def clean_text(text):
+
+    if not text:
+        return ""
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# =========================================================
+# PDF EXTRACTION
+# =========================================================
 
 def extract_pdf_text(uploaded_file):
+
     reader = PdfReader(uploaded_file)
+
     text = ""
 
     for page in reader.pages:
+
         page_text = page.extract_text()
 
         if page_text:
@@ -60,9 +118,439 @@ def extract_pdf_text(uploaded_file):
     return text
 
 
-# ==============================
-# Planning Agent
-# ==============================
+# =========================================================
+# DOCX EXTRACTION
+# =========================================================
+
+def extract_docx_text(uploaded_file):
+
+    document = Document(uploaded_file)
+
+    text_parts = []
+
+    for paragraph in document.paragraphs:
+
+        if paragraph.text.strip():
+            text_parts.append(paragraph.text)
+
+    for table in document.tables:
+
+        for row in table.rows:
+
+            row_text = []
+
+            for cell in row.cells:
+                row_text.append(cell.text.strip())
+
+            text_parts.append(" | ".join(row_text))
+
+    return "\n".join(text_parts)
+
+
+# =========================================================
+# TXT EXTRACTION
+# =========================================================
+
+def extract_txt_text(uploaded_file):
+
+    raw_data = uploaded_file.read()
+
+    for encoding in ["utf-8", "utf-8-sig", "latin-1"]:
+
+        try:
+            return raw_data.decode(encoding)
+
+        except UnicodeDecodeError:
+            continue
+
+    return raw_data.decode("utf-8", errors="ignore")
+
+
+# =========================================================
+# PPTX EXTRACTION
+# =========================================================
+
+def extract_pptx_text(uploaded_file):
+
+    presentation = Presentation(uploaded_file)
+
+    text_parts = []
+
+    for slide_number, slide in enumerate(
+        presentation.slides,
+        start=1
+    ):
+
+        text_parts.append(
+            f"Slide {slide_number}"
+        )
+
+        for shape in slide.shapes:
+
+            if hasattr(shape, "text"):
+
+                if shape.text.strip():
+                    text_parts.append(shape.text)
+
+    return "\n".join(text_parts)
+
+
+# =========================================================
+# XLSX EXTRACTION
+# =========================================================
+
+def extract_xlsx_text(uploaded_file):
+
+    workbook = load_workbook(
+        uploaded_file,
+        read_only=True,
+        data_only=True
+    )
+
+    text_parts = []
+
+    for sheet in workbook.worksheets:
+
+        text_parts.append(
+            f"Sheet: {sheet.title}"
+        )
+
+        for row in sheet.iter_rows(values_only=True):
+
+            values = []
+
+            for value in row:
+
+                if value is not None:
+                    values.append(str(value))
+
+            if values:
+                text_parts.append(
+                    " | ".join(values)
+                )
+
+    return "\n".join(text_parts)
+
+# =========================================================
+# TEXT CHUNKING
+# =========================================================
+
+def create_chunks(
+    text,
+    chunk_size=1800,
+    overlap=300
+):
+
+    text = clean_text(text)
+
+    if not text:
+        return []
+
+    chunks = []
+
+    start = 0
+
+    while start < len(text):
+
+        end = start + chunk_size
+
+        chunk = text[start:end]
+
+        if chunk.strip():
+            chunks.append(chunk.strip())
+
+        if end >= len(text):
+            break
+
+        start = end - overlap
+
+    return chunks
+
+
+# =========================================================
+# SIMPLE RAG RETRIEVAL
+# =========================================================
+
+def retrieve_relevant_chunks(
+    question,
+    chunks,
+    top_k=4
+):
+
+    if not chunks:
+        return []
+
+    question_words = set(
+        re.findall(
+            r"\b[a-zA-Z0-9]+\b",
+            question.lower()
+        )
+    )
+
+    scored_chunks = []
+
+    for chunk in chunks:
+
+        chunk_words = set(
+            re.findall(
+                r"\b[a-zA-Z0-9]+\b",
+                chunk.lower()
+            )
+        )
+
+        overlap = len(
+            question_words.intersection(chunk_words)
+        )
+
+        score = overlap
+
+        if question.lower() in chunk.lower():
+            score += 10
+
+        scored_chunks.append(
+            (score, chunk)
+        )
+
+    scored_chunks.sort(
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    return [
+        chunk
+        for score, chunk in scored_chunks[:top_k]
+        if score > 0
+    ]
+
+
+# =========================================================
+# PROCESS MULTIPLE UPLOADED FILES
+# =========================================================
+
+def process_uploaded_files(uploaded_files):
+
+    document_text_parts = []
+    processed_files = []
+    image_files = []
+
+    image_count = 0
+
+    for uploaded_file in uploaded_files:
+
+        filename = uploaded_file.name
+        extension = filename.lower().split(".")[-1]
+
+        if extension == "pdf":
+
+            text = extract_pdf_text(uploaded_file)
+
+            if text.strip():
+
+                document_text_parts.append(
+                    f"\n===== FILE: {filename} =====\n{text}"
+                )
+
+                processed_files.append(filename)
+
+        elif extension == "docx":
+
+            text = extract_docx_text(uploaded_file)
+
+            if text.strip():
+
+                document_text_parts.append(
+                    f"\n===== FILE: {filename} =====\n{text}"
+                )
+
+                processed_files.append(filename)
+
+        elif extension == "txt":
+
+            text = extract_txt_text(uploaded_file)
+
+            if text.strip():
+
+                document_text_parts.append(
+                    f"\n===== FILE: {filename} =====\n{text}"
+                )
+
+                processed_files.append(filename)
+
+        elif extension == "pptx":
+
+            text = extract_pptx_text(uploaded_file)
+
+            if text.strip():
+
+                document_text_parts.append(
+                    f"\n===== FILE: {filename} =====\n{text}"
+                )
+
+                processed_files.append(filename)
+
+        elif extension == "xlsx":
+
+            text = extract_xlsx_text(uploaded_file)
+
+            if text.strip():
+
+                document_text_parts.append(
+                    f"\n===== FILE: {filename} =====\n{text}"
+                )
+
+                processed_files.append(filename)
+
+        elif extension in ["png", "jpg", "jpeg"]:
+
+            image_count += 1
+
+            if image_count > 10:
+
+                raise ValueError(
+                    "Maximum 10 images are allowed."
+                )
+
+            image_data = uploaded_file.getvalue()
+
+            if extension == "png":
+                mime_type = "image/png"
+            else:
+                mime_type = "image/jpeg"
+
+            image_files.append(
+                {
+                    "name": filename,
+                    "data": image_data,
+                    "mime_type": mime_type
+                }
+            )
+
+            processed_files.append(filename)
+
+    combined_text = "\n".join(
+        document_text_parts
+    )
+
+    chunks = create_chunks(
+        combined_text
+    )
+
+    return (
+        combined_text,
+        chunks,
+        image_files,
+        processed_files
+    )
+
+# =========================================================
+# DOCUMENT QUESTION ANSWERING
+# =========================================================
+
+def answer_document_question(question):
+
+    chunks = st.session_state.document_chunks
+    image_files = st.session_state.image_files
+
+    relevant_chunks = retrieve_relevant_chunks(
+        question,
+        chunks,
+        top_k=4
+    )
+
+    retrieved_text = ""
+
+    if relevant_chunks:
+
+        for index, chunk in enumerate(
+            relevant_chunks,
+            start=1
+        ):
+
+            retrieved_text += (
+                f"\n\n--- Source Section {index} ---\n"
+                f"{chunk}"
+            )
+
+    else:
+
+        retrieved_text = (
+            "No relevant text section was retrieved."
+        )
+
+    prompt = f"""
+You are EduAgent AI, an educational assistant.
+
+The user has uploaded study materials.
+These materials may include PDF, DOCX, TXT, PPTX,
+XLSX documents and images.
+
+User question:
+{question}
+
+Retrieved text from uploaded study materials:
+{retrieved_text}
+
+There may also be uploaded images attached after
+this instruction.
+
+IMPORTANT SOURCE RULES:
+
+1. First check the uploaded study material.
+
+2. If the answer is clearly supported by the uploaded
+material, answer using that material.
+
+3. Do not invent information and pretend it came from
+the uploaded material.
+
+4. If the answer is NOT found or cannot be reliably
+determined from the uploaded material, clearly begin
+your response with:
+
+📄 This information was not found in the uploaded document.
+
+Then provide a useful answer from your general knowledge
+and clearly begin that part with:
+
+🤖 Answer from EduAgent's general knowledge:
+
+5. If the uploaded material contains the answer,
+begin with:
+
+📄 Answer from uploaded document:
+
+6. If an image contains relevant information, you may
+use the image as part of the uploaded study material.
+
+7. Keep answers clear and suitable for students and
+teachers.
+
+8. Never claim that general knowledge came from the
+uploaded material.
+
+Answer the user's question now.
+"""
+
+    contents = [prompt]
+
+    for image in image_files:
+
+        contents.append(
+            types.Part.from_bytes(
+                data=image["data"],
+                mime_type=image["mime_type"]
+            )
+        )
+
+    answer = generate_with_retry(
+        contents
+    )
+
+    return answer, relevant_chunks
+
+# =========================================================
+# PLANNING AGENT
+# =========================================================
 
 def planning_agent(
     subject,
@@ -104,9 +592,9 @@ Return the answer with clear headings.
     return generate_with_retry(prompt)
 
 
-# ==============================
-# Content Agent
-# ==============================
+# =========================================================
+# CONTENT AGENT
+# =========================================================
 
 def content_agent(
     subject,
@@ -150,9 +638,9 @@ Requirements:
     return generate_with_retry(prompt)
 
 
-# ==============================
-# Assessment Agent
-# ==============================
+# =========================================================
+# ASSESSMENT AGENT
+# =========================================================
 
 def assessment_agent(
     subject,
@@ -198,9 +686,9 @@ Requirements:
     return generate_with_retry(prompt)
 
 
-# ==============================
-# Review Agent
-# ==============================
+# =========================================================
+# REVIEW AGENT
+# =========================================================
 
 def review_agent(
     subject,
@@ -259,9 +747,9 @@ Keep the review concise and useful.
     return generate_with_retry(prompt)
 
 
-# ==============================
-# Complete Multi-Agent Pipeline
-# ==============================
+# =========================================================
+# COMPLETE MULTI-AGENT PIPELINE
+# =========================================================
 
 def generate_teaching_package(
     subject,
@@ -309,234 +797,530 @@ def generate_teaching_package(
         "review": review
     }
 
-
-# ==============================
-# Streamlit Interface
-# ==============================
-
-st.set_page_config(
-    page_title="EduAgent AI",
-    page_icon="🎓",
-    layout="wide"
-)
+# =========================================================
+# SIMPLE STREAMLIT UI
+# =========================================================
 
 st.title("🎓 EduAgent AI")
-st.subheader("Multi-Agent Teaching Assistant")
 
 st.write(
-    "Generate a complete teaching package using "
-    "four specialized AI agents."
+    "Multi-Agent Teaching Assistant — create a complete "
+    "classroom-ready teaching package and interact with "
+    "your uploaded study materials."
 )
-
-
-# Teacher Inputs
-
-# ==============================
-# Visual Styling
-# ==============================
-
-st.markdown("""
-<style>
-.hero {
-    padding: 1.4rem 1.6rem;
-    border-radius: 18px;
-    background: linear-gradient(135deg, #eef5ff 0%, #f7f9fc 100%);
-    border: 1px solid #dbe5f1;
-    margin-bottom: 1.2rem;
-}
-.hero-title {
-    font-size: 2.2rem;
-    font-weight: 750;
-    margin: 0;
-}
-.hero-subtitle {
-    font-size: 1.05rem;
-    margin-top: 0.35rem;
-    color: #52606d;
-}
-.agent-card {
-    padding: 0.9rem;
-    border-radius: 12px;
-    border: 1px solid #e1e7ef;
-    background: #ffffff;
-    text-align: center;
-    min-height: 105px;
-}
-.agent-icon { font-size: 1.6rem; }
-.agent-name { font-weight: 650; margin-top: 0.25rem; }
-.agent-desc { font-size: 0.82rem; color: #697586; }
-.section-note { color: #667085; margin-bottom: 0.8rem; }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ==============================
-# Hero Header
-# ==============================
-
-st.markdown("""
-<div class="hero">
-    <div class="hero-title">🎓 EduAgent AI</div>
-    <div class="hero-subtitle">
-        Multi-Agent Teaching Assistant — create a complete, classroom-ready
-        teaching package in seconds.
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ==============================
-# Agent Overview
-# ==============================
 
 st.markdown("### 🤖 How EduAgent AI works")
 
 agent_cols = st.columns(4)
 
-agents = [
+agent_info = [
     ("📋", "Planning Agent", "Builds the lesson structure"),
     ("🧠", "Content Agent", "Creates teaching material"),
     ("📝", "Assessment Agent", "Creates questions & homework"),
-    ("🔍", "Review Agent", "Checks quality and alignment"),
+    ("🔍", "Review Agent", "Checks quality and alignment")
 ]
 
-for col, (icon, name, description) in zip(agent_cols, agents):
+for col, (icon, name, description) in zip(agent_cols, agent_info):
     with col:
-        st.markdown(
-            f"""
-            <div class="agent-card">
-                <div class="agent-icon">{icon}</div>
-                <div class="agent-name">{name}</div>
-                <div class="agent-desc">{description}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown(f"### {icon}")
+        st.write(f"**{name}**")
+        st.caption(description)
 
-st.markdown("### 🧑‍🏫 Create your teaching package")
-st.markdown(
-    '<div class="section-note">Enter your lesson details below, then let the four AI agents prepare the package.</div>',
-    unsafe_allow_html=True
+
+# =========================================================
+# MAIN TABS
+# =========================================================
+
+tab_knowledge, tab_teaching = st.tabs(
+    [
+        "💬 Ask Your Knowledge Base",
+        "🧑‍🏫 Teaching Package"
+    ]
 )
 
 
-with st.form("teaching_package_form"):
+# =========================================================
+# KNOWLEDGE BASE TAB
+# =========================================================
 
-    input_col1, input_col2 = st.columns(2)
+with tab_knowledge:
 
-    with input_col1:
-        subject = st.text_input(
-            "Subject",
-            value="Physics",
-            key="subject_input",
-            placeholder="e.g. Physics"
-        )
-
-        grade = st.text_input(
-            "Grade",
-            value="Grade 9",
-            key="grade_input",
-            placeholder="e.g. Grade 9"
-        )
-
-        topic = st.text_input(
-            "Topic",
-            value="Ohm's Law",
-            key="topic_input",
-            placeholder="e.g. Ohm's Law"
-        )
-
-    with input_col2:
-        duration = st.number_input(
-            "Class Duration (minutes)",
-            min_value=10,
-            max_value=180,
-            value=40,
-            step=5,
-            key="duration_input"
-        )
-
-        difficulty = st.selectbox(
-            "Difficulty Level",
-            ["Easy", "Medium", "Hard"],
-            index=1,
-            key="difficulty_input"
-        )
-
-        st.caption("💡 Tip: Choose a difficulty level appropriate for your students.")
-
-    st.markdown("### 📚 Knowledge Base")
-
-    uploaded_file = st.file_uploader(
-        "Upload a PDF (curriculum, textbook, teacher notes, etc.)",
-        type=["pdf"]
+    st.markdown(
+        "### 📚 Upload Your Study Materials"
     )
 
-    submitted = st.form_submit_button(
-        "🚀 Generate Teaching Package",
-        type="primary",
-        use_container_width=True
+    st.write(
+        "Upload multiple documents and images. "
+        "EduAgent will use the uploaded material "
+        "to answer questions."
     )
 
+    uploaded_files = st.file_uploader(
+        "Upload your study materials",
+        type=[
+            "pdf",
+            "docx",
+            "txt",
+            "pptx",
+            "xlsx",
+            "png",
+            "jpg",
+            "jpeg"
+        ],
+        accept_multiple_files=True,
+        help=(
+            "Supported: PDF, DOCX, TXT, PPTX, XLSX, "
+            "PNG, JPG, JPEG. Maximum 10 images."
+        )
+    )
 
-# ==============================
-# Generate Package
-# ==============================
+    if uploaded_files:
 
-if submitted:
+        image_upload_count = sum(
+            1
+            for file in uploaded_files
+            if file.name.lower().split(".")[-1]
+            in ["png", "jpg", "jpeg"]
+        )
 
-    knowledge_text = ""
+        if image_upload_count > 10:
 
-    if uploaded_file is not None:
-        with st.spinner("📚 Reading your PDF..."):
-            knowledge_text = extract_pdf_text(uploaded_file)
+            st.error(
+                "❌ Maximum 10 images are allowed. "
+                f"You selected {image_upload_count}."
+            )
 
-        if not knowledge_text.strip():
-            st.error("❌ Could not extract readable text from this PDF.")
-            st.stop()
+        else:
 
-        st.success(f"✅ PDF loaded successfully: {uploaded_file.name}")
+            if st.button(
+                "📥 Process & Load Knowledge Base",
+                type="primary",
+                use_container_width=True
+            ):
 
-    with st.spinner(
-        "🤖 Four AI agents are preparing your teaching package..."
+                try:
+
+                    with st.spinner(
+                        "📚 Processing your study materials..."
+                    ):
+
+                        (
+                            combined_text,
+                            chunks,
+                            image_files,
+                            processed_files
+                        ) = process_uploaded_files(
+                            uploaded_files
+                        )
+
+                    st.session_state.document_text = (
+                        combined_text
+                    )
+
+                    st.session_state.document_chunks = (
+                        chunks
+                    )
+
+                    st.session_state.image_files = (
+                        image_files
+                    )
+
+                    st.session_state.processed_files = (
+                        processed_files
+                    )
+
+                    st.session_state.document_name = (
+                        ", ".join(processed_files)
+                    )
+
+                    st.session_state.chat_history = []
+
+                    st.session_state.question_count = 0
+
+                    st.session_state.knowledge_loaded = True
+
+                    st.success(
+                        "✅ Knowledge base loaded successfully!"
+                    )
+
+                except Exception as e:
+
+                    st.error(
+                        f"❌ Error while processing files: {e}"
+                    )
+
+
+    # =====================================================
+    # KNOWLEDGE STATUS
+    # =====================================================
+
+    st.markdown(
+        "### 📊 Knowledge Base Status"
+    )
+
+    status_col1, status_col2, status_col3, status_col4 = st.columns(4)
+
+    with status_col1:
+
+        if st.session_state.knowledge_loaded:
+
+            st.metric(
+                "Status",
+                "Loaded"
+            )
+
+        else:
+
+            st.metric(
+                "Status",
+                "Not Loaded"
+            )
+
+    with status_col2:
+
+        st.metric(
+            "Files",
+            len(
+                st.session_state.processed_files
+            )
+        )
+
+    with status_col3:
+
+        st.metric(
+            "Text Sections",
+            len(
+                st.session_state.document_chunks
+            )
+        )
+
+    with status_col4:
+
+        st.metric(
+            "Images",
+            f"{len(st.session_state.image_files)}/10"
+        )
+
+
+    # =====================================================
+    # LOADED FILES
+    # =====================================================
+
+    if st.session_state.processed_files:
+
+        with st.expander(
+            "📁 View Loaded Files"
+        ):
+
+            for filename in (
+                st.session_state.processed_files
+            ):
+
+                st.write(
+                    f"✅ {filename}"
+                )
+
+
+    # =====================================================
+    # ASK QUESTION
+    # =====================================================
+
+    if st.session_state.knowledge_loaded:
+
+        st.markdown(
+            "### 💬 Ask Your Uploaded Material"
+        )
+
+        question = st.text_input(
+            "Ask a question",
+            placeholder=(
+                "Example: What is Ohm's Law?"
+            )
+        )
+
+        ask_button = st.button(
+            "🔎 Ask EduAgent",
+            type="primary"
+        )
+
+        if ask_button:
+
+            if not question.strip():
+
+                st.warning(
+                    "⚠️ Please enter a question."
+                )
+
+            else:
+
+                try:
+
+                    with st.spinner(
+                        "🤖 Searching your study materials..."
+                    ):
+
+                        (
+                            answer,
+                            relevant_chunks
+                        ) = answer_document_question(
+                            question
+                        )
+
+                    st.session_state.chat_history.append(
+                        {
+                            "question": question,
+                            "answer": answer,
+                            "sources": relevant_chunks
+                        }
+                    )
+
+                    st.session_state.question_count += 1
+
+                except Exception as e:
+
+                    st.error(
+                        f"❌ Error: {e}"
+                    )
+
+
+    # =====================================================
+    # CHAT HISTORY
+    # =====================================================
+
+    if st.session_state.chat_history:
+
+        st.markdown(
+            "### 🗨️ Questions & Answers"
+        )
+
+        for chat in reversed(
+            st.session_state.chat_history
+        ):
+
+            with st.chat_message("user"):
+
+                st.write(
+                    chat["question"]
+                )
+
+            with st.chat_message("assistant"):
+
+                st.markdown(
+                    chat["answer"]
+                )
+
+                if chat["sources"]:
+
+                    with st.expander(
+                        "📖 View Source Context"
+                    ):
+
+                        for index, source in enumerate(
+                            chat["sources"],
+                            start=1
+                        ):
+
+                            st.markdown(
+                                f"**Source Section {index}**"
+                            )
+
+                            st.write(
+                                source
+                            )
+
+                            st.divider()
+
+
+    # =====================================================
+    # IMAGE PREVIEW
+    # =====================================================
+
+    if st.session_state.image_files:
+
+        with st.expander(
+            "🖼️ View Uploaded Images"
+        ):
+
+            for image in (
+                st.session_state.image_files
+            ):
+
+                st.markdown(
+                    f"**{image['name']}**"
+                )
+
+                st.image(
+                    image["data"],
+                    use_container_width=True
+                )
+
+
+# =========================================================
+# TEACHING PACKAGE TAB
+# =========================================================
+
+with tab_teaching:
+
+    st.markdown(
+        "### 🧑‍🏫 Create Your Teaching Package"
+    )
+
+    st.markdown(
+        """
+        <div class="section-note">
+        Enter your lesson details below, then let the
+        four AI agents prepare the package.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.form(
+        "teaching_package_form"
     ):
 
-        package = generate_teaching_package(
-            subject,
-            grade,
-            topic,
-            duration,
-            difficulty
+        input_col1, input_col2 = st.columns(2)
+
+        with input_col1:
+
+            subject = st.text_input(
+                "Subject",
+                value="Physics",
+                key="subject_input",
+                placeholder="e.g. Physics"
+            )
+
+            grade = st.text_input(
+                "Grade",
+                value="Grade 9",
+                key="grade_input",
+                placeholder="e.g. Grade 9"
+            )
+
+            topic = st.text_input(
+                "Topic",
+                value="Ohm's Law",
+                key="topic_input",
+                placeholder="e.g. Ohm's Law"
+            )
+
+        with input_col2:
+
+            duration = st.number_input(
+                "Class Duration (minutes)",
+                min_value=10,
+                max_value=180,
+                value=40,
+                step=5,
+                key="duration_input"
+            )
+
+            difficulty = st.selectbox(
+                "Difficulty Level",
+                [
+                    "Easy",
+                    "Medium",
+                    "Hard"
+                ],
+                index=1,
+                key="difficulty_input"
+            )
+
+            st.caption(
+                "💡 Choose a difficulty level appropriate "
+                "for your students."
+            )
+
+        submitted = st.form_submit_button(
+            "🚀 Generate Teaching Package",
+            type="primary",
+            use_container_width=True
         )
 
-    st.success("✅ Teaching package generated successfully!")
 
-    st.markdown(f"### 📚 Teaching Package: {topic}")
+    # =====================================================
+    # GENERATE PACKAGE
+    # =====================================================
 
-    st.caption(
-        f"{subject} • {grade} • {duration} minutes • {difficulty} difficulty"
-    )
+    if submitted:
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📚 Lesson Plan",
-        "🧠 Teaching Content",
-        "📝 Assessment",
-        "🔍 Review"
-    ])
+        with st.spinner(
+            "🤖 Four AI agents are preparing "
+            "your teaching package..."
+        ):
 
-    with tab1:
-        st.markdown(package["lesson_plan"])
+            try:
 
-    with tab2:
-        st.markdown(package["content"])
+                package = generate_teaching_package(
+                    subject,
+                    grade,
+                    topic,
+                    duration,
+                    difficulty
+                )
 
-    with tab3:
-        st.markdown(package["assessment"])
+            except Exception as e:
 
-    with tab4:
-        st.markdown(package["review"])
+                st.error(
+                    f"❌ Error while generating package: {e}"
+                )
 
-    download_text = f"""EDUAGENT AI — TEACHING PACKAGE
+                st.stop()
+
+        st.success(
+            "✅ Teaching package generated successfully!"
+        )
+
+        st.markdown(
+            f"### 📚 Teaching Package: {topic}"
+        )
+
+        st.caption(
+            f"{subject} • {grade} • "
+            f"{duration} minutes • "
+            f"{difficulty} difficulty"
+        )
+
+        tab1, tab2, tab3, tab4 = st.tabs(
+            [
+                "📚 Lesson Plan",
+                "🧠 Teaching Content",
+                "📝 Assessment",
+                "🔍 Review"
+            ]
+        )
+
+        with tab1:
+
+            st.markdown(
+                package["lesson_plan"]
+            )
+
+        with tab2:
+
+            st.markdown(
+                package["content"]
+            )
+
+        with tab3:
+
+            st.markdown(
+                package["assessment"]
+            )
+
+        with tab4:
+
+            st.markdown(
+                package["review"]
+            )
+
+
+        # =================================================
+        # DOWNLOAD PACKAGE
+        # =================================================
+
+        download_text = f"""
+EDUAGENT AI — TEACHING PACKAGE
 
 Subject: {subject}
 Grade: {grade}
@@ -569,11 +1353,27 @@ REVIEW
 {package["review"]}
 """
 
-    st.download_button(
-        "📥 Download Teaching Package",
-        data=download_text,
-        file_name=f"EduAgent_{topic.replace(' ', '_')}.txt",
-        mime="text/plain",
-        type="secondary",
-        use_container_width=True
-    )
+        st.download_button(
+            "📥 Download Teaching Package",
+            data=download_text,
+            file_name=(
+                f"EduAgent_"
+                f"{topic.replace(' ', '_')}.txt"
+            ),
+            mime="text/plain",
+            type="secondary",
+            use_container_width=True
+        )
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.markdown("---")
+
+st.caption(
+    "🎓 EduAgent AI | Multi-Agent Teaching Assistant | "
+    "Multi-Format Knowledge Base | Simple RAG | "
+    "Visual Understanding"
+)
