@@ -5,3 +5,4 @@ numpy
 python-docx
 python-pptx
 openpyxl
+reportlab
