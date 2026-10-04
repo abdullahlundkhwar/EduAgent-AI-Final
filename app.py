@@ -1357,7 +1357,7 @@ REVIEW
 {package["review"]}
 """
 
-        def create_teaching_package_pdf(
+      def create_teaching_package_pdf(
     subject,
     grade,
     topic,
@@ -1430,7 +1430,6 @@ REVIEW
     ]
 
     for heading, content in sections:
-
         story.append(
             Paragraph(
                 heading,
