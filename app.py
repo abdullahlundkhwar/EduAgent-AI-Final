@@ -1241,123 +1241,11 @@ with tab_teaching:
             use_container_width=True
         )
 
+# =====================================================
+# PDF CREATION FUNCTION
+# =====================================================
 
-    # =====================================================
-    # GENERATE PACKAGE
-    # =====================================================
-
-    if submitted:
-
-        with st.spinner(
-            "🤖 Four AI agents are preparing "
-            "your teaching package..."
-        ):
-
-            try:
-
-                package = generate_teaching_package(
-                    subject,
-                    grade,
-                    topic,
-                    duration,
-                    difficulty
-                )
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Error while generating package: {e}"
-                )
-
-                st.stop()
-
-        st.success(
-            "✅ Teaching package generated successfully!"
-        )
-
-        st.markdown(
-            f"### 📚 Teaching Package: {topic}"
-        )
-
-        st.caption(
-            f"{subject} • {grade} • "
-            f"{duration} minutes • "
-            f"{difficulty} difficulty"
-        )
-
-        tab1, tab2, tab3, tab4 = st.tabs(
-            [
-                "📚 Lesson Plan",
-                "🧠 Teaching Content",
-                "📝 Assessment",
-                "🔍 Review"
-            ]
-        )
-
-        with tab1:
-
-            st.markdown(
-                package["lesson_plan"]
-            )
-
-        with tab2:
-
-            st.markdown(
-                package["content"]
-            )
-
-        with tab3:
-
-            st.markdown(
-                package["assessment"]
-            )
-
-        with tab4:
-
-            st.markdown(
-                package["review"]
-            )
-
-
-        # =================================================
-        # DOWNLOAD PACKAGE
-        # =================================================
-
-        download_text = f"""
-EDUAGENT AI — TEACHING PACKAGE
-
-Subject: {subject}
-Grade: {grade}
-Topic: {topic}
-Class Duration: {duration} minutes
-Difficulty: {difficulty}
-
-==================================================
-LESSON PLAN
-==================================================
-
-{package["lesson_plan"]}
-
-==================================================
-TEACHING CONTENT
-==================================================
-
-{package["content"]}
-
-==================================================
-ASSESSMENT
-==================================================
-
-{package["assessment"]}
-
-==================================================
-REVIEW
-==================================================
-
-{package["review"]}
-"""
-
-      def create_teaching_package_pdf(
+def create_teaching_package_pdf(
     subject,
     grade,
     topic,
@@ -1430,6 +1318,7 @@ REVIEW
     ]
 
     for heading, content in sections:
+
         story.append(
             Paragraph(
                 heading,
@@ -1459,31 +1348,111 @@ REVIEW
     return buffer.getvalue()
 
 
-pdf_data = create_teaching_package_pdf(
-    subject,
-    grade,
-    topic,
-    duration,
-    difficulty,
-    package
-)
+# =====================================================
+# GENERATE PACKAGE
+# =====================================================
 
-st.download_button(
-    "📥 Download Teaching Package as PDF",
-    data=pdf_data,
-    file_name=(
-        f"EduAgent_"
-        f"{topic.replace(' ', '_')}.pdf"
-    ),
-    mime="application/pdf",
-    type="secondary",
-    use_container_width=True
-)
+if submitted:
+
+    with st.spinner(
+        "🤖 Four AI agents are preparing "
+        "your teaching package..."
+    ):
+
+        try:
+
+            package = generate_teaching_package(
+                subject,
+                grade,
+                topic,
+                duration,
+                difficulty
+            )
+
+        except Exception as e:
+
+            st.error(
+                f"❌ Error while generating package: {e}"
+            )
+
+            st.stop()
+
+    st.success(
+        "✅ Teaching package generated successfully!"
+    )
+
+    st.markdown(
+        f"### 📚 Teaching Package: {topic}"
+    )
+
+    st.caption(
+        f"{subject} • {grade} • "
+        f"{duration} minutes • "
+        f"{difficulty} difficulty"
+    )
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            "📚 Lesson Plan",
+            "🧠 Teaching Content",
+            "📝 Assessment",
+            "🔍 Review"
+        ]
+    )
+
+    with tab1:
+
+        st.markdown(
+            package["lesson_plan"]
+        )
+
+    with tab2:
+
+        st.markdown(
+            package["content"]
+        )
+
+    with tab3:
+
+        st.markdown(
+            package["assessment"]
+        )
+
+    with tab4:
+
+        st.markdown(
+            package["review"]
+        )
+
+    # =================================================
+    # DOWNLOAD PACKAGE AS PDF
+    # =================================================
+
+    pdf_data = create_teaching_package_pdf(
+        subject,
+        grade,
+        topic,
+        duration,
+        difficulty,
+        package
+    )
+
+    st.download_button(
+        "📥 Download Teaching Package as PDF",
+        data=pdf_data,
+        file_name=(
+            f"EduAgent_"
+            f"{topic.replace(' ', '_')}.pdf"
+        ),
+        mime="application/pdf",
+        type="secondary",
+        use_container_width=True
+    )
 
 
-# =========================================================
+# =====================================================
 # FOOTER
-# =========================================================
+# =====================================================
 
 st.markdown("---")
 
