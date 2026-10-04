@@ -8,7 +8,11 @@ from pptx import Presentation
 from openpyxl import load_workbook
 import time
 import re
-
+from io import BytesIO
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 # =========================================================
 # PAGE CONFIGURATION
