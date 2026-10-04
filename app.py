@@ -1357,17 +1357,129 @@ REVIEW
 {package["review"]}
 """
 
-        st.download_button(
-            "📥 Download Teaching Package",
-            data=download_text,
-            file_name=(
-                f"EduAgent_"
-                f"{topic.replace(' ', '_')}.txt"
-            ),
-            mime="text/plain",
-            type="secondary",
-            use_container_width=True
+        def create_teaching_package_pdf(
+    subject,
+    grade,
+    topic,
+    duration,
+    difficulty,
+    package
+):
+    buffer = BytesIO()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=45,
+        leftMargin=45,
+        topMargin=45,
+        bottomMargin=45
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "TitleStyle",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=20,
+        spaceAfter=15
+    )
+
+    heading_style = ParagraphStyle(
+        "HeadingStyle",
+        parent=styles["Heading2"],
+        fontSize=15,
+        spaceBefore=12,
+        spaceAfter=8
+    )
+
+    body_style = ParagraphStyle(
+        "BodyStyle",
+        parent=styles["BodyText"],
+        fontSize=10,
+        leading=14,
+        spaceAfter=6
+    )
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "EduAgent AI - Teaching Package",
+            title_style
         )
+    )
+
+    story.append(
+        Paragraph(
+            f"<b>Subject:</b> {subject}<br/>"
+            f"<b>Grade:</b> {grade}<br/>"
+            f"<b>Topic:</b> {topic}<br/>"
+            f"<b>Class Duration:</b> {duration} minutes<br/>"
+            f"<b>Difficulty:</b> {difficulty}",
+            body_style
+        )
+    )
+
+    sections = [
+        ("Lesson Plan", package["lesson_plan"]),
+        ("Teaching Content", package["content"]),
+        ("Assessment", package["assessment"]),
+        ("Review", package["review"])
+    ]
+
+    for heading, content in sections:
+
+        story.append(
+            Paragraph(
+                heading,
+                heading_style
+            )
+        )
+
+        safe_content = (
+            str(content)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\n", "<br/>")
+        )
+
+        story.append(
+            Paragraph(
+                safe_content,
+                body_style
+            )
+        )
+
+    doc.build(story)
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+pdf_data = create_teaching_package_pdf(
+    subject,
+    grade,
+    topic,
+    duration,
+    difficulty,
+    package
+)
+
+st.download_button(
+    "📥 Download Teaching Package as PDF",
+    data=pdf_data,
+    file_name=(
+        f"EduAgent_"
+        f"{topic.replace(' ', '_')}.pdf"
+    ),
+    mime="application/pdf",
+    type="secondary",
+    use_container_width=True
+)
 
 
 # =========================================================
